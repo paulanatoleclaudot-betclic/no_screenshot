@@ -22,6 +22,7 @@ public class IOSNoScreenshotPlugin: NSObject, FlutterPlugin, FlutterStreamHandle
     private var colorOverlayView: UIView? = nil
     private var colorValue: Int = 0xFF000000
     private var isScreenRecording: Bool = false
+    private var isScreenshotListening = false
     private var isRecordingListening: Bool = false
 
     private static let ENABLESCREENSHOT = false
@@ -462,11 +463,15 @@ public class IOSNoScreenshotPlugin: NSObject, FlutterPlugin, FlutterStreamHandle
     }
 
     private func startListening() {
+        if isScreenshotListening { return }
+        isScreenshotListening = true
         NotificationCenter.default.addObserver(self, selector: #selector(screenshotDetected), name: UIApplication.userDidTakeScreenshotNotification, object: nil)
         persistState()
     }
 
     private func stopListening() {
+        if !isScreenshotListening { return }
+        isScreenshotListening = false
         NotificationCenter.default.removeObserver(self, name: UIApplication.userDidTakeScreenshotNotification, object: nil)
         persistState()
     }

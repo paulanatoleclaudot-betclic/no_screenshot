@@ -88,6 +88,7 @@ class NoScreenshotPlugin : FlutterPlugin, MethodChannel.MethodCallHandler, Activ
     private var lifecycleCallbacks: Application.ActivityLifecycleCallbacks? = null
     private var isScreenRecording: Boolean = false
     private var isRecordingListening: Boolean = false
+    private var isScreenshotListening: Boolean = false
     private val notifiedImageIds = LinkedHashSet<Long>()
     private var screenCaptureCallback: Any? = null
     private var screenRecordingCallback: Any? = null
@@ -694,6 +695,8 @@ class NoScreenshotPlugin : FlutterPlugin, MethodChannel.MethodCallHandler, Activ
     }
 
     private fun startListening() {
+        if (isScreenshotListening) return
+        isScreenshotListening = true
         screenshotObserver?.let {
             context.contentResolver.registerContentObserver(
                 MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
@@ -704,6 +707,8 @@ class NoScreenshotPlugin : FlutterPlugin, MethodChannel.MethodCallHandler, Activ
     }
 
     private fun stopListening() {
+        if (!isScreenshotListening) return
+        isScreenshotListening = false
         screenshotObserver?.let { context.contentResolver.unregisterContentObserver(it) }
         notifiedImageIds.clear()
     }
