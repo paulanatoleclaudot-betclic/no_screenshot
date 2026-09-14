@@ -43,6 +43,7 @@ const val PREF_NAME = "screenshot_pref"
 const val START_SCREENSHOT_LISTENING_CONST = "startScreenshotListening"
 const val STOP_SCREENSHOT_LISTENING_CONST = "stopScreenshotListening"
 const val SCREENSHOT_PATH = "screenshot_path"
+const val SCREENSHOT_PATH_PLACEHOLDER = "screenshot_path_placeholder"
 // Enough for the rows finalising around one capture; bounded so the set cannot grow.
 const val MAX_REMEMBERED_IMAGE_IDS = 16
 const val PREF_KEY_SCREENSHOT = "is_screenshot_on"
@@ -119,10 +120,12 @@ class NoScreenshotPlugin : FlutterPlugin, MethodChannel.MethodCallHandler, Activ
         if (isRecordingListening) {
             registerScreenRecordingCallbacks()
         }
+        syncScreenCaptureCallback()
     }
 
     override fun onDetachedFromActivityForConfigChanges() {
         unregisterScreenRecordingCallbacks()
+        releaseScreenCaptureCallback()
         removeImageOverlay()
         removeBlurOverlay()
         removeColorOverlay()
@@ -135,10 +138,12 @@ class NoScreenshotPlugin : FlutterPlugin, MethodChannel.MethodCallHandler, Activ
         if (isRecordingListening) {
             registerScreenRecordingCallbacks()
         }
+        syncScreenCaptureCallback()
     }
 
     override fun onDetachedFromActivity() {
         unregisterScreenRecordingCallbacks()
+        releaseScreenCaptureCallback()
         removeImageOverlay()
         removeBlurOverlay()
         removeColorOverlay()
@@ -574,8 +579,8 @@ class NoScreenshotPlugin : FlutterPlugin, MethodChannel.MethodCallHandler, Activ
     private fun registerScreenRecordingCallbacks() {
         if (Build.VERSION.SDK_INT >= 35) {
             registerScreenRecordingCallback()
-        } else if (Build.VERSION.SDK_INT >= 34) {
-            registerScreenCaptureCallback()
+        } else {
+            syncScreenCaptureCallback()
         }
     }
 
@@ -583,9 +588,7 @@ class NoScreenshotPlugin : FlutterPlugin, MethodChannel.MethodCallHandler, Activ
         if (Build.VERSION.SDK_INT >= 35) {
             unregisterScreenRecordingCallback()
         }
-        if (Build.VERSION.SDK_INT >= 34) {
-            unregisterScreenCaptureCallback()
-        }
+        syncScreenCaptureCallback()
     }
 
     @Suppress("NewApi")
@@ -618,28 +621,56 @@ class NoScreenshotPlugin : FlutterPlugin, MethodChannel.MethodCallHandler, Activ
         screenRecordingCallback = null
     }
 
-    private fun registerScreenCaptureCallback() {
-        if (Build.VERSION.SDK_INT >= 34) {
-            val act = activity ?: return
-            if (screenCaptureCallback != null) return
+    // Android invokes every registered ScreenCaptureCallback for one capture, so both features share
+    // this one rather than each registering its own.
+    @Suppress("NewApi", "UNCHECKED_CAST")
+    private fun syncScreenCaptureCallback() {
+        if (Build.VERSION.SDK_INT < 34) return
+        val act = activity ?: return
 
-            val callback = Activity.ScreenCaptureCallback {
-                isScreenRecording = true
-                updateSharedPreferencesState("", System.currentTimeMillis())
+        // From API 35 recording has a callback of its own, so only screenshots need this one.
+        val needed = isScreenshotListening || (isRecordingListening && Build.VERSION.SDK_INT < 35)
+
+        if (needed && screenCaptureCallback == null) {
+            val callback = Activity.ScreenCaptureCallback { onScreenCaptured() }
+            try {
+                act.registerScreenCaptureCallback(act.mainExecutor, callback)
+            } catch (e: SecurityException) {
+                // Only reachable if the host removed the permission this plugin declares.
+                Log.w("ScreenshotProtection", "DETECT_SCREEN_CAPTURE not granted, capture detection is off", e)
+                isScreenshotListening = false
+                return
             }
-            act.registerScreenCaptureCallback(act.mainExecutor, callback)
             screenCaptureCallback = callback
-        }
-    }
-
-    private fun unregisterScreenCaptureCallback() {
-        if (Build.VERSION.SDK_INT >= 34) {
-            val act = activity ?: return
-            val callback = screenCaptureCallback as? Activity.ScreenCaptureCallback ?: return
-            act.unregisterScreenCaptureCallback(callback)
+        } else if (!needed && screenCaptureCallback != null) {
+            act.unregisterScreenCaptureCallback(screenCaptureCallback as Activity.ScreenCaptureCallback)
             screenCaptureCallback = null
         }
     }
+
+    // Detach leaves the listener flags set, so syncScreenCaptureCallback still considers the callback
+    // needed and would keep the one bound to the outgoing activity. Drop it here - after the recording
+    // teardown, whose own sync would otherwise re-register it - and let reattachment register afresh.
+    @Suppress("NewApi", "UNCHECKED_CAST")
+    private fun releaseScreenCaptureCallback() {
+        if (Build.VERSION.SDK_INT < 34) return
+        val act = activity ?: return
+        val callback = screenCaptureCallback as? Activity.ScreenCaptureCallback ?: return
+
+        act.unregisterScreenCaptureCallback(callback)
+        screenCaptureCallback = null
+    }
+
+    private fun onScreenCaptured() {
+        if (isRecordingListening && Build.VERSION.SDK_INT < 35) isScreenRecording = true
+
+        if (isScreenshotListening) {
+            updateSharedPreferencesState(SCREENSHOT_PATH_PLACEHOLDER, System.currentTimeMillis(), delayMs = 0)
+        } else {
+            updateSharedPreferencesState("", System.currentTimeMillis())
+        }
+    }
+
 
     private fun initScreenshotObserver() {
         screenshotObserver = object : ContentObserver(Handler()) {
@@ -697,6 +728,24 @@ class NoScreenshotPlugin : FlutterPlugin, MethodChannel.MethodCallHandler, Activ
     private fun startListening() {
         if (isScreenshotListening) return
         isScreenshotListening = true
+        if (Build.VERSION.SDK_INT >= 34) {
+            syncScreenCaptureCallback()
+        } else {
+            registerScreenshotObserver()
+        }
+    }
+
+    private fun stopListening() {
+        if (!isScreenshotListening) return
+        isScreenshotListening = false
+        if (Build.VERSION.SDK_INT >= 34) {
+            syncScreenCaptureCallback()
+        } else {
+            unregisterScreenshotObserver()
+        }
+    }
+
+    private fun registerScreenshotObserver() {
         screenshotObserver?.let {
             context.contentResolver.registerContentObserver(
                 MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
@@ -706,12 +755,11 @@ class NoScreenshotPlugin : FlutterPlugin, MethodChannel.MethodCallHandler, Activ
         }
     }
 
-    private fun stopListening() {
-        if (!isScreenshotListening) return
-        isScreenshotListening = false
+    private fun unregisterScreenshotObserver() {
         screenshotObserver?.let { context.contentResolver.unregisterContentObserver(it) }
         notifiedImageIds.clear()
     }
+
 
     private fun screenshotOff(): Boolean = try {
         activity?.window?.addFlags(LayoutParams.FLAG_SECURE)
