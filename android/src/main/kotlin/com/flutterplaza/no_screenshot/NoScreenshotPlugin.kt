@@ -43,6 +43,8 @@ const val PREF_NAME = "screenshot_pref"
 const val START_SCREENSHOT_LISTENING_CONST = "startScreenshotListening"
 const val STOP_SCREENSHOT_LISTENING_CONST = "stopScreenshotListening"
 const val SCREENSHOT_PATH = "screenshot_path"
+// Enough for the rows finalising around one capture; bounded so the set cannot grow.
+const val MAX_REMEMBERED_IMAGE_IDS = 16
 const val PREF_KEY_SCREENSHOT = "is_screenshot_on"
 const val SCREENSHOT_TAKEN = "was_screenshot_taken"
 const val SET_IMAGE_CONST = "toggleScreenshotWithImage"
@@ -72,10 +74,9 @@ class NoScreenshotPlugin : FlutterPlugin, MethodChannel.MethodCallHandler, Activ
         context.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
     }
     private var screenshotObserver: ContentObserver? = null
-    private val handler = Handler(Looper.getMainLooper())
     private var eventSink: EventChannel.EventSink? = null
     private var lastSharedPreferencesState: String = ""
-    private var hasSharedPreferencesChanged: Boolean = false
+    private var pendingSnapshot: String? = null
     private var isImageOverlayModeEnabled: Boolean = false
     private var isBlurOverlayModeEnabled: Boolean = false
     private var isColorOverlayModeEnabled: Boolean = false
@@ -87,6 +88,7 @@ class NoScreenshotPlugin : FlutterPlugin, MethodChannel.MethodCallHandler, Activ
     private var lifecycleCallbacks: Application.ActivityLifecycleCallbacks? = null
     private var isScreenRecording: Boolean = false
     private var isRecordingListening: Boolean = false
+    private val notifiedImageIds = LinkedHashSet<Long>()
     private var screenCaptureCallback: Any? = null
     private var screenRecordingCallback: Any? = null
 
@@ -211,11 +213,11 @@ class NoScreenshotPlugin : FlutterPlugin, MethodChannel.MethodCallHandler, Activ
 
     override fun onListen(arguments: Any?, events: EventChannel.EventSink?) {
         eventSink = events
-        handler.postDelayed(screenshotStream, 1000)
+        pendingSnapshot?.let { events?.success(it) }
+        pendingSnapshot = null
     }
 
     override fun onCancel(arguments: Any?) {
-        handler.removeCallbacks(screenshotStream)
         eventSink = null
     }
 
@@ -646,6 +648,20 @@ class NoScreenshotPlugin : FlutterPlugin, MethodChannel.MethodCallHandler, Activ
                     if (it.toString()
                             .contains(MediaStore.Images.Media.EXTERNAL_CONTENT_URI.toString())
                     ) {
+                        // MediaStore reports one capture as several notifications about the same row, each
+                        // with different metadata, so the snapshot diff cannot collapse them. Concurrent
+                        // writers give no ordering guarantee between rows, so match against the ids already
+                        // reported rather than the highest one seen, which a late lower id would fall under.
+                        // A notification carrying the collection URI has no id and cannot be matched.
+                        val imageId = it.lastPathSegment?.toLongOrNull()
+
+                        if (imageId != null) {
+                            if (!notifiedImageIds.add(imageId)) return@let
+                            if (notifiedImageIds.size > MAX_REMEMBERED_IMAGE_IDS) {
+                                notifiedImageIds.iterator().run { next(); remove() }
+                            }
+                        }
+
                         Log.d("ScreenshotProtection", "Screenshot detected")
                         var timestampMs = System.currentTimeMillis()
                         var displayName = ""
@@ -670,7 +686,7 @@ class NoScreenshotPlugin : FlutterPlugin, MethodChannel.MethodCallHandler, Activ
                         } catch (_: Exception) {
                             // Query may fail due to permissions; fall back to defaults.
                         }
-                        updateSharedPreferencesState(it.path ?: "", timestampMs, displayName)
+                        updateSharedPreferencesState(it.path ?: "", timestampMs, displayName, delayMs = 0)
                     }
                 }
             }
@@ -689,6 +705,7 @@ class NoScreenshotPlugin : FlutterPlugin, MethodChannel.MethodCallHandler, Activ
 
     private fun stopListening() {
         screenshotObserver?.let { context.contentResolver.unregisterContentObserver(it) }
+        notifiedImageIds.clear()
     }
 
     private fun screenshotOff(): Boolean = try {
@@ -775,7 +792,12 @@ class NoScreenshotPlugin : FlutterPlugin, MethodChannel.MethodCallHandler, Activ
         }
     }
 
-    private fun updateSharedPreferencesState(screenshotData: String, timestampMs: Long = 0L, sourceApp: String = "") {
+    private fun updateSharedPreferencesState(
+        screenshotData: String,
+        timestampMs: Long = 0L,
+        sourceApp: String = "",
+        delayMs: Long = 100
+    ) {
         Handler(Looper.getMainLooper()).postDelayed({
             val isSecure =
                 (activity?.window?.attributes?.flags ?: 0) and LayoutParams.FLAG_SECURE != 0
@@ -790,23 +812,17 @@ class NoScreenshotPlugin : FlutterPlugin, MethodChannel.MethodCallHandler, Activ
                 )
             )
             if (lastSharedPreferencesState != jsonString) {
-                hasSharedPreferencesChanged = true
                 lastSharedPreferencesState = jsonString
+
+                // The diff has already moved on, so a snapshot produced with no sink attached would be
+                // lost for good rather than re-emitted later. Hold it for the next listener.
+                val sink = eventSink
+                if (sink == null) pendingSnapshot = jsonString else sink.success(jsonString)
             }
-        }, 100)
+        }, delayMs)
     }
 
     private fun convertMapToJsonString(map: Map<String, Any>): String {
         return JSONObject(map).toString()
-    }
-
-    private val screenshotStream = object : Runnable {
-        override fun run() {
-            if (hasSharedPreferencesChanged) {
-                eventSink?.success(lastSharedPreferencesState)
-                hasSharedPreferencesChanged = false
-            }
-            handler.postDelayed(this, 1000)
-        }
     }
 }

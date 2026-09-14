@@ -13,7 +13,7 @@ public class IOSNoScreenshotPlugin: NSObject, FlutterPlugin, FlutterStreamHandle
     private static var preventScreenShot: Bool = false
     private var eventSink: FlutterEventSink? = nil
     private var lastSharedPreferencesState: String = ""
-    private var hasSharedPreferencesChanged: Bool = false
+    private var pendingSnapshot: String? = nil
     private var isImageOverlayModeEnabled: Bool = false
     private var isBlurOverlayModeEnabled: Bool = false
     private var blurOverlayView: UIView? = nil
@@ -546,8 +546,15 @@ public class IOSNoScreenshotPlugin: NSObject, FlutterPlugin, FlutterStreamHandle
         ]
         let jsonString = convertMapToJsonString(map)
         if lastSharedPreferencesState != jsonString {
-            hasSharedPreferencesChanged = true
             lastSharedPreferencesState = jsonString
+
+            // The diff has already moved on, so a snapshot produced with no sink attached would be lost
+            // for good rather than re-emitted later. Hold it for the next listener.
+            if let sink = eventSink {
+                sink(jsonString)
+            } else {
+                pendingSnapshot = jsonString
+            }
         }
     }
 
@@ -560,8 +567,9 @@ public class IOSNoScreenshotPlugin: NSObject, FlutterPlugin, FlutterStreamHandle
 
     public func onListen(withArguments arguments: Any?, eventSink events: @escaping FlutterEventSink) -> FlutterError? {
         eventSink = events
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
-            self.screenshotStream()
+        if let pending = pendingSnapshot {
+            events(pending)
+            pendingSnapshot = nil
         }
         return nil
     }
@@ -569,16 +577,6 @@ public class IOSNoScreenshotPlugin: NSObject, FlutterPlugin, FlutterStreamHandle
     public func onCancel(withArguments arguments: Any?) -> FlutterError? {
         eventSink = nil
         return nil
-    }
-
-    private func screenshotStream() {
-        if hasSharedPreferencesChanged {
-            eventSink?(lastSharedPreferencesState)
-            hasSharedPreferencesChanged = false
-        }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
-            self.screenshotStream()
-        }
     }
 
     private func attachWindowIfNeeded() {
