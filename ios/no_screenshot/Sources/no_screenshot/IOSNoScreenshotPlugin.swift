@@ -23,6 +23,7 @@ public class IOSNoScreenshotPlugin: NSObject, FlutterPlugin, FlutterStreamHandle
     private var colorValue: Int = 0xFF000000
     private var isScreenRecording: Bool = false
     private var isScreenshotListening = false
+    private var lastScreenshotUptime: TimeInterval = -.infinity
     private var isRecordingListening: Bool = false
 
     private static let ENABLESCREENSHOT = false
@@ -37,6 +38,9 @@ public class IOSNoScreenshotPlugin: NSObject, FlutterPlugin, FlutterStreamHandle
     private static let methodChannelName = "com.flutterplaza.no_screenshot_methods"
     private static let eventChannelName = "com.flutterplaza.no_screenshot_streams"
     private static let screenshotPathPlaceholder = "screenshot_path_placeholder"
+    // Duplicates arrive within a millisecond. Kept far below a hand-repeated capture, since merging
+    // two real ones loses a screenshot silently where a leaked duplicate is at least visible.
+    private static let duplicateScreenshotWindow: TimeInterval = 0.05
 
     override init() {
         super.init()
@@ -526,6 +530,12 @@ public class IOSNoScreenshotPlugin: NSObject, FlutterPlugin, FlutterStreamHandle
     }
 
     @objc private func screenshotDetected() {
+        // One capture can raise this twice, a millisecond apart, each delivery stamping its own
+        // timestamp - so the snapshot diff cannot collapse them.
+        let uptime = ProcessInfo.processInfo.systemUptime
+        if uptime - lastScreenshotUptime < IOSNoScreenshotPlugin.duplicateScreenshotWindow { return }
+        lastScreenshotUptime = uptime
+
         print("Screenshot detected")
         let nowMs = Int64(Date().timeIntervalSince1970 * 1000)
         updateSharedPreferencesState(IOSNoScreenshotPlugin.screenshotPathPlaceholder, timestamp: nowMs)

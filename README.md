@@ -182,7 +182,12 @@ Screenshot detection uses two different mechanisms depending on the OS version:
 | API | Mechanism | Notes |
 |-----|-----------|-------|
 | 34+ | `Activity.ScreenCaptureCallback` | Fires only for a real screenshot of a visible activity |
-| < 34 | MediaStore `ContentObserver` | Fires for **any** image added to the store, so an image saved by another app also reports as a screenshot |
+| < 34 | MediaStore `ContentObserver` | Fires for **any change to an image row** — insert, update or delete — with no way to tell them apart, so another app saving, editing or removing an image also reports as a screenshot |
+
+Below 34 the event is therefore a **hint, not a guarantee**: the observer is notified for every
+descendant change and the notification carries no operation, so a deletion reaches the stream exactly
+like an insert. Treat `wasScreenshotTaken` on that path as "an image changed", and gate anything
+user-visible accordingly.
 
 The API 34+ path requires `android.permission.DETECT_SCREEN_CAPTURE`. **The plugin declares it, so it
 merges into your app automatically and there is nothing to add.** It is a normal permission — no
