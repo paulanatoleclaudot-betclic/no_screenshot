@@ -565,7 +565,6 @@ class NoScreenshotPlugin : FlutterPlugin, MethodChannel.MethodCallHandler, Activ
         if (isRecordingListening) return
         isRecordingListening = true
         registerScreenRecordingCallbacks()
-        updateSharedPreferencesState("")
     }
 
     private fun stopRecordingListening() {
