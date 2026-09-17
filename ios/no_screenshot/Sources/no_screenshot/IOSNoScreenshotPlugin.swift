@@ -41,6 +41,11 @@ public class IOSNoScreenshotPlugin: NSObject, FlutterPlugin, FlutterStreamHandle
     // Duplicates arrive within a millisecond. Kept far below a hand-repeated capture, since merging
     // two real ones loses a screenshot silently where a leaked duplicate is at least visible.
     private static let duplicateScreenshotWindow: TimeInterval = 0.05
+    // TEMPORARY (QMSB-1476): counts observers on userDidTakeScreenshotNotification. plugin= is the
+    // discriminator - one identity delivering twice is a repeated post, two identities are two observers.
+    private static var registrationCount = 0
+    private static var deliveryCount = 0
+    private static func diag(_ line: String) { NSLog("%@", "[QMSB-1476] " + line) }
 
     override init() {
         super.init()
@@ -58,10 +63,13 @@ public class IOSNoScreenshotPlugin: NSObject, FlutterPlugin, FlutterStreamHandle
     }
 
     public static func register(with registrar: FlutterPluginRegistrar) {
+        let hadChannels = methodChannel != nil || eventChannel != nil
         methodChannel = FlutterMethodChannel(name: methodChannelName, binaryMessenger: registrar.messenger())
         eventChannel = FlutterEventChannel(name: eventChannelName, binaryMessenger: registrar.messenger())
 
         let instance = IOSNoScreenshotPlugin()
+        registrationCount += 1
+        diag("register #\(registrationCount) plugin=\(ObjectIdentifier(instance)) replacesExistingChannels=\(hadChannels)")
 
         registrar.addMethodCallDelegate(instance, channel: methodChannel!)
         eventChannel?.setStreamHandler(instance)
@@ -467,9 +475,13 @@ public class IOSNoScreenshotPlugin: NSObject, FlutterPlugin, FlutterStreamHandle
     }
 
     private func startListening() {
-        if isScreenshotListening { return }
+        if isScreenshotListening {
+            IOSNoScreenshotPlugin.diag("observer NOT added, already listening plugin=\(ObjectIdentifier(self))")
+            return
+        }
         isScreenshotListening = true
-        NotificationCenter.default.addObserver(self, selector: #selector(screenshotDetected), name: UIApplication.userDidTakeScreenshotNotification, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(screenshotDetected(_:)), name: UIApplication.userDidTakeScreenshotNotification, object: nil)
+        IOSNoScreenshotPlugin.diag("observer ADDED plugin=\(ObjectIdentifier(self))")
         persistState()
     }
 
@@ -477,6 +489,7 @@ public class IOSNoScreenshotPlugin: NSObject, FlutterPlugin, FlutterStreamHandle
         if !isScreenshotListening { return }
         isScreenshotListening = false
         NotificationCenter.default.removeObserver(self, name: UIApplication.userDidTakeScreenshotNotification, object: nil)
+        IOSNoScreenshotPlugin.diag("observer REMOVED plugin=\(ObjectIdentifier(self))")
         persistState()
     }
 
@@ -529,11 +542,16 @@ public class IOSNoScreenshotPlugin: NSObject, FlutterPlugin, FlutterStreamHandle
         updateSharedPreferencesState("", timestamp: nowMs)
     }
 
-    @objc private func screenshotDetected() {
+    @objc private func screenshotDetected(_ notification: Notification) {
         // One capture can raise this twice, a millisecond apart, each delivery stamping its own
         // timestamp - so the snapshot diff cannot collapse them.
         let uptime = ProcessInfo.processInfo.systemUptime
-        if uptime - lastScreenshotUptime < IOSNoScreenshotPlugin.duplicateScreenshotWindow { return }
+        let suppressed = uptime - lastScreenshotUptime < IOSNoScreenshotPlugin.duplicateScreenshotWindow
+
+        IOSNoScreenshotPlugin.deliveryCount += 1
+        IOSNoScreenshotPlugin.diag("delivery #\(IOSNoScreenshotPlugin.deliveryCount) plugin=\(ObjectIdentifier(self)) deltaMs=\(String(format: "%.3f", (uptime - lastScreenshotUptime) * 1000)) suppressed=\(suppressed)")
+
+        if suppressed { return }
         lastScreenshotUptime = uptime
 
         print("Screenshot detected")
