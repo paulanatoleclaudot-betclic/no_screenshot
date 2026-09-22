@@ -556,7 +556,16 @@ public class IOSNoScreenshotPlugin: NSObject, FlutterPlugin, FlutterStreamHandle
         let suppressed = uptime - lastScreenshotUptime < IOSNoScreenshotPlugin.duplicateScreenshotWindow
 
         IOSNoScreenshotPlugin.deliveryCount += 1
-        IOSNoScreenshotPlugin.diag("delivery #\(IOSNoScreenshotPlugin.deliveryCount) plugin=\(ObjectIdentifier(self)) deltaMs=\(String(format: "%.3f", (uptime - lastScreenshotUptime) * 1000)) suppressed=\(suppressed)")
+        let delivery = IOSNoScreenshotPlugin.deliveryCount
+        let object = notification.object as AnyObject?
+        let isMain = Thread.isMainThread
+        IOSNoScreenshotPlugin.diag("delivery #\(delivery) plugin=\(ObjectIdentifier(self)) deltaMs=\(String(format: "%.3f", (uptime - lastScreenshotUptime) * 1000)) suppressed=\(suppressed) object=\(object.map { "\(type(of: $0))@\(ObjectIdentifier($0))" } ?? "nil") isSharedApplication=\(isMain ? "\(object === UIApplication.shared)" : "unknown-off-main") thread=\(isMain ? "main" : Thread.current.description)")
+
+        // The frames above this selector name whoever posted the notification, which is the only way to
+        // tell a second post by the system from a second post by something else in the process.
+        for (index, frame) in Thread.callStackSymbols.prefix(12).enumerated() {
+            IOSNoScreenshotPlugin.diag("delivery #\(delivery) frame \(index) \(frame)")
+        }
 
         if suppressed { return }
         lastScreenshotUptime = uptime
