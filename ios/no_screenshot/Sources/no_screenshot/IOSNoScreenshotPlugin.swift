@@ -561,9 +561,23 @@ public class IOSNoScreenshotPlugin: NSObject, FlutterPlugin, FlutterStreamHandle
         let isMain = Thread.isMainThread
         IOSNoScreenshotPlugin.diag("delivery #\(delivery) plugin=\(ObjectIdentifier(self)) deltaMs=\(String(format: "%.3f", (uptime - lastScreenshotUptime) * 1000)) suppressed=\(suppressed) object=\(object.map { "\(type(of: $0))@\(ObjectIdentifier($0))" } ?? "nil") isSharedApplication=\(isMain ? "\(object === UIApplication.shared)" : "unknown-off-main") thread=\(isMain ? "main" : Thread.current.description)")
 
+        // One connected scene cannot produce two posts by fanning out over scenes, so this count either
+        // kills that explanation or promotes it.
+        let scenes = isMain
+            ? UIApplication.shared.connectedScenes
+                .map { "\(type(of: $0))@\(ObjectIdentifier($0))/state\($0.activationState.rawValue)/\($0.session.role.rawValue)" }
+                .joined(separator: ",")
+            : "unknown-off-main"
+        IOSNoScreenshotPlugin.diag("delivery #\(delivery) sceneCount=\(isMain ? "\(UIApplication.shared.connectedScenes.count)" : "unknown-off-main") scenes=[\(scenes)]")
+
         // The frames above this selector name whoever posted the notification, which is the only way to
         // tell a second post by the system from a second post by something else in the process.
-        for (index, frame) in Thread.callStackSymbols.prefix(12).enumerated() {
+        // Addresses are stable within a process run, so equal hashes mean both deliveries came up the
+        // same path - which separates one path invoked twice from two distinct posting sites.
+        let stack = Thread.callStackSymbols
+        IOSNoScreenshotPlugin.diag("delivery #\(delivery) stackDepth=\(stack.count) stackHash=\(String(format: "%016llx", UInt64(bitPattern: Int64(stack.joined(separator: "\n").hashValue))))")
+
+        for (index, frame) in stack.prefix(40).enumerated() {
             IOSNoScreenshotPlugin.diag("delivery #\(delivery) frame \(index) \(frame)")
         }
 
