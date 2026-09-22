@@ -559,7 +559,7 @@ public class IOSNoScreenshotPlugin: NSObject, FlutterPlugin, FlutterStreamHandle
         let delivery = IOSNoScreenshotPlugin.deliveryCount
         let object = notification.object as AnyObject?
         let isMain = Thread.isMainThread
-        IOSNoScreenshotPlugin.diag("delivery #\(delivery) plugin=\(ObjectIdentifier(self)) deltaMs=\(String(format: "%.3f", (uptime - lastScreenshotUptime) * 1000)) suppressed=\(suppressed) object=\(object.map { "\(type(of: $0))@\(ObjectIdentifier($0))" } ?? "nil") isSharedApplication=\(isMain ? "\(object === UIApplication.shared)" : "unknown-off-main") thread=\(isMain ? "main" : Thread.current.description)")
+        IOSNoScreenshotPlugin.diag("delivery #\(delivery) plugin=\(ObjectIdentifier(self)) deltaMs=\(String(format: "%.3f", (uptime - lastScreenshotUptime) * 1000)) suppressed=\(suppressed) object=\(object.map { "\(type(of: $0))@\(ObjectIdentifier($0))" } ?? "nil") isSharedApplication=\(isMain ? "\(object === UIApplication.shared)" : "unknown-off-main") thread=\(isMain ? "main" : Thread.current.description) userInfo=\(String(describing: notification.userInfo))")
 
         // One connected scene cannot produce two posts by fanning out over scenes, so this count either
         // kills that explanation or promotes it.
