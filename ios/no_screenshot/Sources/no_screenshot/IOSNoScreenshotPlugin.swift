@@ -1,5 +1,6 @@
 import Flutter
 import UIKit
+import os.log
 
 #if SWIFT_PACKAGE
 @objc(NoScreenshotPlugin)
@@ -45,7 +46,13 @@ public class IOSNoScreenshotPlugin: NSObject, FlutterPlugin, FlutterStreamHandle
     // discriminator - one identity delivering twice is a repeated post, two identities are two observers.
     private static var registrationCount = 0
     private static var deliveryCount = 0
-    private static func diag(_ line: String) { NSLog("%@", "[QMSB-1476] " + line) }
+    // The marker sits in the format literal and the argument is explicitly public, so Console shows it
+    // whether or not os_log redacts dynamic strings; print covers a local run attached to Xcode.
+    private static let diagLog = OSLog(subsystem: "com.betclic.qmsb1476", category: "screenshot")
+    private static func diag(_ line: String) {
+        print("[QMSB-1476] " + line)
+        os_log("[QMSB-1476] %{public}@", log: diagLog, type: .default, line)
+    }
 
     override init() {
         super.init()
