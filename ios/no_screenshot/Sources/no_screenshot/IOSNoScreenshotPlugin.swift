@@ -13,7 +13,7 @@ public class IOSNoScreenshotPlugin: NSObject, FlutterPlugin, FlutterStreamHandle
     private static var preventScreenShot: Bool = false
     private var eventSink: FlutterEventSink? = nil
     private var lastSharedPreferencesState: String = ""
-    private var hasSharedPreferencesChanged: Bool = false
+    private var pendingSnapshot: String? = nil
     private var isImageOverlayModeEnabled: Bool = false
     private var isBlurOverlayModeEnabled: Bool = false
     private var blurOverlayView: UIView? = nil
@@ -22,6 +22,8 @@ public class IOSNoScreenshotPlugin: NSObject, FlutterPlugin, FlutterStreamHandle
     private var colorOverlayView: UIView? = nil
     private var colorValue: Int = 0xFF000000
     private var isScreenRecording: Bool = false
+    private var isScreenshotListening = false
+    private var lastScreenshotUptime: TimeInterval = -.infinity
     private var isRecordingListening: Bool = false
 
     private static let ENABLESCREENSHOT = false
@@ -36,6 +38,9 @@ public class IOSNoScreenshotPlugin: NSObject, FlutterPlugin, FlutterStreamHandle
     private static let methodChannelName = "com.flutterplaza.no_screenshot_methods"
     private static let eventChannelName = "com.flutterplaza.no_screenshot_streams"
     private static let screenshotPathPlaceholder = "screenshot_path_placeholder"
+    // Duplicates arrive within a millisecond. Kept far below a hand-repeated capture, since merging
+    // two real ones loses a screenshot silently where a leaked duplicate is at least visible.
+    private static let duplicateScreenshotWindow: TimeInterval = 0.05
 
     override init() {
         super.init()
@@ -462,11 +467,15 @@ public class IOSNoScreenshotPlugin: NSObject, FlutterPlugin, FlutterStreamHandle
     }
 
     private func startListening() {
+        if isScreenshotListening { return }
+        isScreenshotListening = true
         NotificationCenter.default.addObserver(self, selector: #selector(screenshotDetected), name: UIApplication.userDidTakeScreenshotNotification, object: nil)
         persistState()
     }
 
     private func stopListening() {
+        if !isScreenshotListening { return }
+        isScreenshotListening = false
         NotificationCenter.default.removeObserver(self, name: UIApplication.userDidTakeScreenshotNotification, object: nil)
         persistState()
     }
@@ -521,6 +530,12 @@ public class IOSNoScreenshotPlugin: NSObject, FlutterPlugin, FlutterStreamHandle
     }
 
     @objc private func screenshotDetected() {
+        // One capture can raise this twice, a millisecond apart, each delivery stamping its own
+        // timestamp - so the snapshot diff cannot collapse them.
+        let uptime = ProcessInfo.processInfo.systemUptime
+        if uptime - lastScreenshotUptime < IOSNoScreenshotPlugin.duplicateScreenshotWindow { return }
+        lastScreenshotUptime = uptime
+
         print("Screenshot detected")
         let nowMs = Int64(Date().timeIntervalSince1970 * 1000)
         updateSharedPreferencesState(IOSNoScreenshotPlugin.screenshotPathPlaceholder, timestamp: nowMs)
@@ -546,8 +561,15 @@ public class IOSNoScreenshotPlugin: NSObject, FlutterPlugin, FlutterStreamHandle
         ]
         let jsonString = convertMapToJsonString(map)
         if lastSharedPreferencesState != jsonString {
-            hasSharedPreferencesChanged = true
             lastSharedPreferencesState = jsonString
+
+            // The diff has already moved on, so a snapshot produced with no sink attached would be lost
+            // for good rather than re-emitted later. Hold it for the next listener.
+            if let sink = eventSink {
+                sink(jsonString)
+            } else {
+                pendingSnapshot = jsonString
+            }
         }
     }
 
@@ -560,8 +582,9 @@ public class IOSNoScreenshotPlugin: NSObject, FlutterPlugin, FlutterStreamHandle
 
     public func onListen(withArguments arguments: Any?, eventSink events: @escaping FlutterEventSink) -> FlutterError? {
         eventSink = events
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
-            self.screenshotStream()
+        if let pending = pendingSnapshot {
+            events(pending)
+            pendingSnapshot = nil
         }
         return nil
     }
@@ -569,16 +592,6 @@ public class IOSNoScreenshotPlugin: NSObject, FlutterPlugin, FlutterStreamHandle
     public func onCancel(withArguments arguments: Any?) -> FlutterError? {
         eventSink = nil
         return nil
-    }
-
-    private func screenshotStream() {
-        if hasSharedPreferencesChanged {
-            eventSink?(lastSharedPreferencesState)
-            hasSharedPreferencesChanged = false
-        }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
-            self.screenshotStream()
-        }
     }
 
     private func attachWindowIfNeeded() {
